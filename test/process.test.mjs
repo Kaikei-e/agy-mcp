@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
-import { runAgy } from "../dist/agy.js";
+import { parseAgyOutput, runAgy } from "../dist/agy.js";
 import { loadConfig } from "../dist/config.js";
 import { ProcessRunner } from "../dist/process.js";
 
@@ -19,6 +25,25 @@ const options = (prompt, extra = {}) => ({
   maxBufferBytes: 1_000_000,
   ...extra,
 });
+
+async function barriers(t, count) {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "agy-parallel-"));
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  return Array.from({ length: count }, (_, i) => {
+    const file = path.join(temp, String(i));
+    return {
+      prompt: `wait:${file}`,
+      ready: async () => {
+        for (let i = 0; i < 150; i++) {
+          if (existsSync(`${file}.ready`)) return;
+          await delay(20);
+        }
+        assert.fail("fixture did not reach the barrier");
+      },
+      release: () => writeFileSync(`${file}.release`, ""),
+    };
+  });
+}
 
 test("spawn failure, pre-canceled requests, and closed runners settle", async () => {
   const runner = new ProcessRunner();
@@ -63,14 +88,168 @@ test("output overflow and bounded stderr", async () => {
 });
 
 test(
-  "overlapping calls return BUSY; shutdown cancels an active CLI",
-  { timeout: 6_000 },
-  async () => {
+  "parallel processes overlap, keep results separate, and reuse capacity",
+  { timeout: 8_000 },
+  async (t) => {
+    const [first, second] = await barriers(t, 2);
+    const runner = new ProcessRunner(2);
+    t.after(() => runner.close());
+    const one = runner.run(options(first.prompt));
+    const two = runner.run(options(second.prompt));
+    await Promise.all([first.ready(), second.ready()]);
+    const full = await runner.run(options("ok"));
+    assert.equal(full.failure, "BUSY");
+    assert.match(full.error, /AGY_MCP_MAX_CONCURRENT/);
+
+    second.release();
+    const secondResult = await two;
+    assert.equal(secondResult.exitCode, 0);
+    assert.equal(
+      JSON.parse(parseAgyOutput(secondResult.stdout).response).prompt,
+      second.prompt,
+    );
+    assert.equal((await runner.run(options("ok"))).exitCode, 0);
+    first.release();
+    const firstResult = await one;
+    assert.equal(firstResult.exitCode, 0);
+    assert.equal(
+      JSON.parse(parseAgyOutput(firstResult.stdout).response).prompt,
+      first.prompt,
+    );
+  },
+);
+
+test("single-slot configuration preserves BUSY behavior", async (t) => {
+  const runner = new ProcessRunner(1);
+  t.after(() => runner.close());
+  const active = runner.run(options("hang"));
+  assert.equal((await runner.run(options("ok"))).failure, "BUSY");
+  await runner.close();
+  assert.equal((await active).failure, "CANCELED");
+});
+
+test(
+  "shutdown cancels and awaits every active CLI",
+  { timeout: 8_000 },
+  async (t) => {
+    const gates = await barriers(t, 4);
     const runner = new ProcessRunner();
-    const active = runner.run(options("hang"));
-    assert.equal((await runner.run(options("ok"))).failure, "BUSY");
-    await runner.close();
-    assert.equal((await active).failure, "CANCELED");
+    t.after(() => runner.close());
+    const pending = gates.map((gate) => runner.run(options(gate.prompt)));
+    await Promise.all(gates.map((gate) => gate.ready()));
+    await Promise.all([runner.close(), runner.close()]);
+    assert.deepEqual(
+      (await Promise.all(pending)).map((result) => result.failure),
+      Array(4).fill("CANCELED"),
+    );
+    assert.equal((await runner.run(options("ok"))).failure, "CANCELED");
+  },
+);
+
+test(
+  "cancellation and timeout leave other calls running and release their slots",
+  { timeout: 8_000 },
+  async (t) => {
+    const [first, second] = await barriers(t, 2);
+    const runner = new ProcessRunner(2);
+    t.after(() => runner.close());
+    const controller = new AbortController();
+    const one = runner.run(
+      options(first.prompt, { signal: controller.signal }),
+    );
+    const two = runner.run(options(second.prompt));
+    await Promise.all([first.ready(), second.ready()]);
+    controller.abort();
+    assert.equal((await one).failure, "CANCELED");
+    assert.equal(
+      (await runner.run(options("hang", { timeoutMs: 250 }))).failure,
+      "TIMEOUT",
+    );
+    assert.equal(
+      (await runner.run(options("overflow", { maxBufferBytes: 1_024 })))
+        .failure,
+      "OUTPUT_LIMIT",
+    );
+    assert.equal(
+      (await runner.run(options("ok", { bin: "/missing-agy-test" }))).failure,
+      "SPAWN_ERROR",
+    );
+    assert.equal((await runner.run(options("ok"))).exitCode, 0);
+    second.release();
+    assert.equal((await two).exitCode, 0);
+  },
+);
+
+test(
+  "continuations lock the same UUID across workspaces and release it on cancellation",
+  { timeout: 8_000 },
+  async (t) => {
+    const [gate] = await barriers(t, 1);
+    const runner = new ProcessRunner();
+    t.after(() => runner.close());
+    const controller = new AbortController();
+    const id = "055a398f-db14-4c5f-abbb-1bf03f8120a7";
+    const run = (extra) =>
+      runAgy(
+        { prompt: "ok", workspace: process.cwd(), ...extra },
+        config,
+        runner,
+      );
+    const active = run({
+      prompt: gate.prompt,
+      conversationId: id,
+      signal: controller.signal,
+    });
+    await gate.ready();
+    const busy = await run({
+      conversationId: id.toUpperCase(),
+      workspace: os.tmpdir(),
+    });
+    assert.equal(busy.status, "BUSY");
+    assert.match(busy.error, /conversation is already running/);
+    assert.equal(
+      (await run({ conversationId: "155a398f-db14-4c5f-abbb-1bf03f8120a7" }))
+        .ok,
+      true,
+    );
+    assert.equal((await run({})).ok, true);
+    controller.abort();
+    assert.equal((await active).status, "CANCELED");
+    assert.equal((await run({ conversationId: id })).ok, true);
+  },
+);
+
+test(
+  "implicit continuation is exclusive in both directions",
+  { timeout: 8_000 },
+  async (t) => {
+    const [first, second] = await barriers(t, 2);
+    const runner = new ProcessRunner();
+    t.after(() => runner.close());
+    const run = (extra) =>
+      runAgy(
+        { prompt: "ok", workspace: process.cwd(), ...extra },
+        config,
+        runner,
+      );
+    const active = run({ prompt: first.prompt });
+    await first.ready();
+    assert.equal((await run({ continueLatest: true })).status, "BUSY");
+    first.release();
+    assert.equal((await active).ok, true);
+
+    const latest = run({ prompt: second.prompt, continueLatest: true });
+    await second.ready();
+    assert.equal((await run({})).status, "BUSY");
+    assert.equal(
+      (await run({ conversationId: "055a398f-db14-4c5f-abbb-1bf03f8120a7" }))
+        .status,
+      "BUSY",
+    );
+    assert.equal((await run({ continueLatest: true })).status, "BUSY");
+    second.release();
+    assert.equal((await latest).ok, true);
+    assert.equal((await run({})).ok, true);
   },
 );
 

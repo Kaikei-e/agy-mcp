@@ -144,6 +144,9 @@ export async function runAgy(
     timeoutMs: (options.timeoutSec ?? 300) * 1_000,
     maxBufferBytes: config.maxBufferBytes,
     signal: options.signal,
+    // UUIDs are case-insensitive. Only implicit continuation needs exclusivity.
+    lockKey: options.conversationId?.toLowerCase(),
+    exclusive: Boolean(options.continueLatest && !options.conversationId),
     onStdout: (chunk) => {
       pending += chunk;
       let newline: number;

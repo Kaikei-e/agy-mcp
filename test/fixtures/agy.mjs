@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, writeFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 
 const args = process.argv.slice(2);
 const value = (flag) => args[args.indexOf(flag) + 1];
 const prompt = value("-p");
-const id = "055a398f-db14-4c5f-abbb-1bf03f8120a7";
+const id = args.includes("--conversation")
+  ? value("--conversation")
+  : randomUUID();
 const emit = (object) => process.stdout.write(`${JSON.stringify(object)}\n`);
 if (args[0] === "--version") {
   console.log("1.2.6-test");
@@ -47,6 +51,12 @@ if (args[0] === "--version") {
       text_delta: "not forwarded as progress",
     },
   });
+  // A file barrier proves subprocesses overlap without relying on timing.
+  if (prompt.startsWith("wait:")) {
+    const barrier = prompt.slice("wait:".length);
+    writeFileSync(`${barrier}.ready`, String(process.pid));
+    while (!existsSync(`${barrier}.release`)) await delay(20);
+  }
   const result = {
     status: prompt === "error" ? "ERROR" : "SUCCESS",
     response:

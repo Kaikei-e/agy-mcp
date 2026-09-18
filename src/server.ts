@@ -144,8 +144,7 @@ export function createServer(config: Config, runner: ProcessRunner): McpServer {
     "antigravity_run",
     {
       title: "Run Antigravity",
-      description:
-        "Start one Antigravity CLI turn in a new conversation. Useful for repository research, a second opinion, and explicitly requested edits. Returns a conversation_id for follow-up. One agy call can run at a time per server. Calls use your existing Antigravity account and quota.",
+      description: `Start one Antigravity CLI turn in a new conversation. Useful for repository research, a second opinion, and explicitly requested edits. Returns a conversation_id for follow-up. Up to ${config.maxConcurrent} agy calls can run concurrently per server; excess calls return BUSY. Parallel calls share workspace files and your existing Antigravity account and quota.`,
       inputSchema: z.object(commonInput).strict(),
       annotations,
     },
@@ -157,7 +156,7 @@ export function createServer(config: Config, runner: ProcessRunner): McpServer {
     {
       title: "Continue Antigravity",
       description:
-        "Follow up in an existing Antigravity conversation. Prefer an explicit conversation_id; without it, agy resumes its most recent conversation, which other CLI sessions may change. Use the same workspace as the original turn.",
+        "Follow up in an existing Antigravity conversation. Different explicit conversation_ids can run in parallel; simultaneous continuations of the same ID return BUSY. Without an ID, agy resumes its most recent conversation and requires exclusive access to this server, otherwise BUSY is returned. Other CLI sessions may change the latest conversation. Use the same workspace as the original turn.",
       inputSchema: z
         .object({ ...commonInput, conversation_id: z.uuid().optional() })
         .strict(),

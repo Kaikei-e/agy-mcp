@@ -16,6 +16,8 @@ export interface ProcessOptions {
   maxBufferBytes: number;
   signal?: AbortSignal;
   onStdout?: (chunk: string) => void;
+  lockKey?: string;
+  exclusive?: boolean;
 }
 
 const failureResult = (
@@ -50,16 +52,26 @@ function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-/** One active CLI per server: no accidental overlap of --continue or shared CLI state. */
+/** Bounded parallel CLIs, with optional resource locks or exclusive execution. */
 export class ProcessRunner {
-  private active?: { stop: () => void; done: Promise<ProcessResult> };
+  private readonly active = new Set<{
+    stop: () => void;
+    done: Promise<ProcessResult>;
+    lockKey?: string;
+    exclusive: boolean;
+  }>();
   private closed = false;
+
+  constructor(private readonly maxConcurrent = 4) {
+    if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1)
+      throw new Error("maxConcurrent must be a positive integer");
+  }
 
   async close(): Promise<void> {
     this.closed = true;
-    const active = this.active;
-    active?.stop();
-    await active?.done;
+    const active = [...this.active];
+    for (const process of active) process.stop();
+    await Promise.all(active.map((process) => process.done));
   }
 
   run(options: ProcessOptions): Promise<ProcessResult> {
@@ -67,11 +79,32 @@ export class ProcessRunner {
       return Promise.resolve(
         failureResult("CANCELED", "Request canceled before starting agy"),
       );
-    if (this.active)
+    if (
+      this.active.size > 0 &&
+      (options.exclusive ||
+        [...this.active].some((process) => process.exclusive))
+    )
       return Promise.resolve(
         failureResult(
           "BUSY",
-          "Another agy call is running. Wait for it to finish before retrying.",
+          "Continuing the latest conversation requires exclusive access. Wait for active calls to finish or use an explicit conversation_id.",
+        ),
+      );
+    if (
+      options.lockKey !== undefined &&
+      [...this.active].some((process) => process.lockKey === options.lockKey)
+    )
+      return Promise.resolve(
+        failureResult(
+          "BUSY",
+          "This conversation is already running. Wait for it to finish before continuing it.",
+        ),
+      );
+    if (this.active.size >= this.maxConcurrent)
+      return Promise.resolve(
+        failureResult(
+          "BUSY",
+          `All ${this.maxConcurrent} agy slots are in use. Wait for a call to finish or raise AGY_MCP_MAX_CONCURRENT.`,
         ),
       );
 
@@ -148,10 +181,15 @@ export class ProcessRunner {
       options.signal?.addEventListener("abort", cancel, { once: true });
       if (options.signal?.aborted) cancel();
     });
-    const active = { stop: () => cancel(), done };
-    this.active = active;
+    const active = {
+      stop: () => cancel(),
+      done,
+      lockKey: options.lockKey,
+      exclusive: options.exclusive ?? false,
+    };
+    this.active.add(active);
     void done.then(() => {
-      if (this.active === active) this.active = undefined;
+      this.active.delete(active);
     });
     return done;
   }

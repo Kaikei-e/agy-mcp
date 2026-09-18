@@ -14,7 +14,7 @@ It is designed for a personal local installation that can also be inspected, ada
 | `antigravity_continue` | Continues a conversation by ID. Without an ID, it asks `agy` to continue its latest conversation.                  |
 | `antigravity_models`   | Runs `agy models` and returns the CLI output. It does not start a model turn, but it may contact Antigravity.      |
 
-`run` and `continue` accept a prompt, an absolute workspace, optional model and effort, a mode (`plan` or `accept-edits`), an autonomy level, and a hard timeout. The server runs one `agy` command at a time. A simultaneous call receives `BUSY`; do not rely on this server for parallel CLI sessions.
+`run` and `continue` accept a prompt, an absolute workspace, optional model and effort, a mode (`plan` or `accept-edits`), an autonomy level, and a hard timeout. The server runs up to four `agy` commands concurrently by default. Set `AGY_MCP_MAX_CONCURRENT` to change this limit.
 
 List model slugs with `antigravity_models`, then use one in `model`.
 
@@ -30,6 +30,17 @@ List model slugs with `antigravity_models`, then use one in `model`.
 ```
 
 `timeout_seconds` defaults to 300 and accepts integers from 10 through 3600.
+
+## Parallel calls
+
+Submit multiple MCP tool calls concurrently to run independent tasks in parallel. Each call has its own CLI process, output, progress, timeout, and cancellation. Canceling one call leaves the others running; shutting down the server stops all active calls.
+
+- New conversations and continuations with different explicit `conversation_id` values can overlap, including in the same workspace.
+- Two continuations specifying the same conversation ID cannot overlap, even across workspaces; the second returns `BUSY`.
+- A continuation without an ID (`--continue`) requires exclusive access to the server. It returns `BUSY` while any call is active, and other calls return `BUSY` while it runs. Use the ID returned by `antigravity_run` for parallel follow-ups.
+- All commands, including `antigravity_models`, count toward the concurrency limit. Calls exceeding the limit return `BUSY` immediately and are not queued. Set the limit to `1` to restore serial execution.
+
+These limits and conversation locks apply within one server process. Workspace files, CLI state, credentials, and account quota remain shared; the bridge does not create isolated worktrees or coordinate other servers or CLI sessions. Assign separate files or worktrees when parallel tasks edit code, and prefer explicit conversation IDs because other sessions can change the latest conversation.
 
 ## Requirements
 
@@ -74,7 +85,8 @@ For Claude Code, a project `.mcp.json` entry can look like this:
       "args": ["/absolute/path/to/agy-mcp/dist/index.js"],
       "env": {
         "AGY_MCP_DEFAULT_WORKSPACE": "/absolute/path/to/workspace",
-        "AGY_MCP_ALLOWED_ROOT": "/absolute/path/to"
+        "AGY_MCP_ALLOWED_ROOT": "/absolute/path/to",
+        "AGY_MCP_MAX_CONCURRENT": "4"
       }
     }
   }
@@ -102,11 +114,12 @@ The bridge disables CLI slash-command expansion for prompts, but output returned
 | `AGY_MCP_BIN`                 | `agy`                    | CLI executable name, or an absolute path or path relative to the server's current directory. |
 | `AGY_MCP_DEFAULT_WORKSPACE`   | server current directory | Default workspace after resolution and canonicalization.                                     |
 | `AGY_MCP_ALLOWED_ROOT`        | unset                    | Optional canonical root that must contain every chosen workspace.                            |
+| `AGY_MCP_MAX_CONCURRENT`      | `4`                      | Maximum simultaneous CLI processes per server; integer from 1 to 32.                         |
 | `AGY_MCP_MAX_OUTPUT_CHARS`    | `40000`                  | Maximum characters in each MCP result representation; integer from 1024 to 1000000.          |
 | `AGY_MCP_MAX_BUFFER_BYTES`    | `8388608`                | Maximum captured CLI stdout before the process is stopped; integer from 1024 to 67108864.    |
 | `AGY_MCP_ALLOW_FULL_AUTONOMY` | `false`                  | Set exactly `true` to allow requests with `autonomy: "full"`.                                |
 
-Each tool response supplies `structuredContent` and the same JSON in its text content. The whole representation, including error and metadata fields, is capped by `AGY_MCP_MAX_OUTPUT_CHARS`; truncated results say so. CLI stdout is independently capped by `AGY_MCP_MAX_BUFFER_BYTES`.
+Each tool response supplies `structuredContent` and the same JSON in its text content. The whole representation, including error and metadata fields, is capped by `AGY_MCP_MAX_OUTPUT_CHARS`; truncated results say so. CLI stdout is independently capped by `AGY_MCP_MAX_BUFFER_BYTES` per process, so total memory use grows with concurrency.
 
 Long-running calls emit MCP progress metadata when the client provides a progress token, plus a heartbeat while the CLI is waiting. On cancellation, timeout, or output-limit failure, the server attempts to terminate the CLI process group on Linux and macOS. Windows termination is best effort; verify that no child process remains when that matters.
 

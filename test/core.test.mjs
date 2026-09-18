@@ -37,6 +37,20 @@ test("configuration validates numeric limits and booleans", () => {
   assert.equal(loadConfig({}).allowFullAutonomy, false);
 });
 
+test("parallelism defaults to four and accepts only bounded positive integers", () => {
+  assert.equal(loadConfig({}).maxConcurrent, 4);
+  for (const value of ["1", "2", "32"])
+    assert.equal(
+      loadConfig({ AGY_MCP_MAX_CONCURRENT: value }).maxConcurrent,
+      Number(value),
+    );
+  for (const value of ["", "0", "-1", "1.5", "NaN", "Infinity", "33", " 2"])
+    assert.throws(
+      () => loadConfig({ AGY_MCP_MAX_CONCURRENT: value }),
+      /AGY_MCP_MAX_CONCURRENT must be an integer between 1 and 32/,
+    );
+});
+
 test("canonical paths reject traversal, sibling prefixes and escaping symlinks", (t) => {
   const temp = mkdtempSync(path.join(os.tmpdir(), "agy-paths-"));
   t.after(() => rmSync(temp, { recursive: true, force: true }));

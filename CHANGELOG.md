@@ -10,3 +10,4 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Initial local MCP bridge for Antigravity CLI runs, conversation continuation, and model listing.
 - OSS documentation, contribution guidance, security reporting guidance, a Claude Code configuration example, and continuous integration.
+- Configurable parallel CLI execution with `AGY_MCP_MAX_CONCURRENT` (default 4, range 1–32), per-call cancellation, conversation-ID locks, and exclusive latest-conversation continuation. Set the limit to 1 for the previous serial behavior.

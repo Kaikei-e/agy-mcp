@@ -7,6 +7,7 @@ export interface Config {
   allowedRoot?: string;
   maxOutputChars: number;
   maxBufferBytes: number;
+  maxConcurrent: number;
   allowFullAutonomy: boolean;
 }
 
@@ -82,6 +83,7 @@ export function loadConfig(
       1_024,
       67_108_864,
     ),
+    maxConcurrent: integer(env, "AGY_MCP_MAX_CONCURRENT", 4, 1, 32),
     allowFullAutonomy: full === "true",
   };
   resolveWorkspace(undefined, config);

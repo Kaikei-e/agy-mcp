@@ -14,7 +14,7 @@
 | `antigravity_continue` | ID を指定して会話を継続します。ID を省略すると `agy` の直近の会話を継続します。                                    |
 | `antigravity_models`   | `agy models` を実行して CLI の出力を返します。モデルターンは開始しませんが、Antigravity に接続する場合があります。 |
 
-`run` と `continue` は、プロンプト、絶対パスのワークスペース、任意のモデル・effort、`plan` または `accept-edits` の mode、autonomy、実行期限を受け取ります。サーバー内では `agy` を一度に 1 つだけ実行します。同時の呼び出しは `BUSY` で返るため、並列 CLI 実行を期待する用途には使えません。
+`run` と `continue` は、プロンプト、絶対パスのワークスペース、任意のモデル・effort、`plan` または `accept-edits` の mode、autonomy、実行期限を受け取ります。既定では `agy` を最大 4 件まで並列実行できます。上限は `AGY_MCP_MAX_CONCURRENT` で変更できます。
 
 `antigravity_models` でモデルの slug を一覧し、`model` に指定します。
 
@@ -30,6 +30,17 @@
 ```
 
 `timeout_seconds` の既定値は 300 で、10〜3600 の整数を指定できます。
+
+## 並列実行
+
+複数の MCP ツール呼び出しを同時に送ると、独立したタスクを並列実行できます。CLI プロセス、出力、進捗、タイムアウト、キャンセルは呼び出しごとに管理します。1 件をキャンセルしても他の実行は継続し、サーバー終了時には実行中の全プロセスを停止します。
+
+- 新規会話や、異なる `conversation_id` を指定した継続は、同じワークスペースでも並列実行できます。
+- 同じ会話 ID を指定した継続は、ワークスペースが異なっても同時実行できません。後から来た呼び出しは `BUSY` を返します。
+- ID 省略時の継続（`--continue`）はサーバーを占有します。他の呼び出しが実行中なら `BUSY` を返し、ID 省略の継続が実行中なら他の呼び出しが `BUSY` を返します。並列で会話を継続する場合は `antigravity_run` が返した ID を指定してください。
+- `antigravity_models` を含む全コマンドが同時実行数に数えられます。上限超過時は待機キューに入らず、即座に `BUSY` を返します。上限を `1` にすると従来の逐次実行に戻せます。
+
+同時実行数の制限と会話 ID の排他制御は、1 つのサーバープロセス内で有効です。ワークスペースのファイル、CLI の状態、認証情報、アカウントのクォータは共有されます。worktree の自動分離や、別サーバー・別 CLI セッションとの調整は行いません。並列でコードを編集する場合は担当ファイルや worktree を分けてください。また、別セッションによって直近の会話が変わるため、会話 ID の明示を推奨します。
 
 ## 前提条件
 
@@ -74,7 +85,8 @@ Claude Code のプロジェクト `.mcp.json` は次のように書けます。
       "args": ["/absolute/path/to/agy-mcp/dist/index.js"],
       "env": {
         "AGY_MCP_DEFAULT_WORKSPACE": "/absolute/path/to/workspace",
-        "AGY_MCP_ALLOWED_ROOT": "/absolute/path/to"
+        "AGY_MCP_ALLOWED_ROOT": "/absolute/path/to",
+        "AGY_MCP_MAX_CONCURRENT": "4"
       }
     }
   }
@@ -102,11 +114,12 @@ Claude Code のプロジェクト `.mcp.json` は次のように書けます。
 | `AGY_MCP_BIN`                 | `agy`                          | CLI の実行ファイル名、絶対パス、またはサーバーのカレントディレクトリからの相対パス。 |
 | `AGY_MCP_DEFAULT_WORKSPACE`   | サーバーのカレントディレクトリ | 省略時のワークスペース。解決・正規化後に利用します。                                 |
 | `AGY_MCP_ALLOWED_ROOT`        | 未設定                         | 選択可能なワークスペースを含む任意の実体パスのルート。                               |
+| `AGY_MCP_MAX_CONCURRENT`      | `4`                            | サーバーごとの CLI 同時実行数の上限。1〜32 の整数。                                  |
 | `AGY_MCP_MAX_OUTPUT_CHARS`    | `40000`                        | 各 MCP 結果表現の最大文字数。1024〜1000000 の整数。                                  |
 | `AGY_MCP_MAX_BUFFER_BYTES`    | `8388608`                      | 停止前に取り込む CLI stdout の最大バイト数。1024〜67108864 の整数。                  |
 | `AGY_MCP_ALLOW_FULL_AUTONOMY` | `false`                        | `autonomy: "full"` を許可するには、厳密に `true` を設定します。                      |
 
-各ツール結果には `structuredContent` と、同一 JSON のテキストコンテンツが含まれます。エラーやメタデータを含む表現全体は `AGY_MCP_MAX_OUTPUT_CHARS` で上限を設け、切り詰め時には明示します。CLI stdout には別途 `AGY_MCP_MAX_BUFFER_BYTES` の上限があります。
+各ツール結果には `structuredContent` と、同一 JSON のテキストコンテンツが含まれます。エラーやメタデータを含む表現全体は `AGY_MCP_MAX_OUTPUT_CHARS` で上限を設け、切り詰め時には明示します。CLI stdout にはプロセスごとに `AGY_MCP_MAX_BUFFER_BYTES` の上限があり、並列数に応じて全体のメモリ使用量が増えます。
 
 進捗トークンを渡すクライアントには、長時間実行中の進捗メタデータとハートビートを返します。キャンセル、タイムアウト、出力上限では Linux と macOS で CLI のプロセスグループ停止を試みます。Windows の停止はベストエフォートのため、重要な場合は子プロセスが残っていないか確認してください。
 

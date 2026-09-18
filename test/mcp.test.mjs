@@ -5,6 +5,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,6 +32,7 @@ function clientPair(extraEnv = {}, options = {}) {
       AGY_MCP_BIN: fixture,
       AGY_MCP_DEFAULT_WORKSPACE: root,
       AGY_MCP_ALLOWED_ROOT: root,
+      AGY_MCP_MAX_CONCURRENT: "4",
       ...extraEnv,
     },
   });
@@ -234,7 +236,88 @@ test("progress notifications and bounded tool results survive the MCP boundary",
 });
 
 test(
-  "client cancellation stops an active agy subprocess",
+  "MCP runs and distinct continuations overlap with separate results and progress",
+  { timeout: 10_000 },
+  async (t) => {
+    const temp = mkdtempSync(path.join(os.tmpdir(), "agy-mcp-parallel-"));
+    const pair = await connected({ AGY_MCP_MAX_CONCURRENT: "2" });
+    t.after(async () => {
+      await closePair(pair);
+      rmSync(temp, { recursive: true, force: true });
+    });
+    const gates = [path.join(temp, "first"), path.join(temp, "second")];
+    const id = "055a398f-db14-4c5f-abbb-1bf03f8120a7";
+    const progress = [[], []];
+    const pending = gates.map((gate, i) =>
+      pair.client.callTool(
+        {
+          name: i === 0 ? "antigravity_run" : "antigravity_continue",
+          arguments: {
+            prompt: `wait:${gate}`,
+            timeout_seconds: 10,
+            ...(i === 1 ? { conversation_id: id } : {}),
+          },
+        },
+        { onprogress: (event) => progress[i].push(event) },
+      ),
+    );
+    await waitFor(
+      () => gates.every((gate) => existsSync(`${gate}.ready`)),
+      4_000,
+    );
+    const full = await pair.client.callTool({
+      name: "antigravity_models",
+      arguments: {},
+    });
+    assert.equal(full.isError, true);
+    assert.equal(valueOf(full).status, "BUSY");
+    const sameConversation = await pair.client.callTool({
+      name: "antigravity_continue",
+      arguments: { prompt: "ok", conversation_id: id.toUpperCase() },
+    });
+    assert.equal(valueOf(sameConversation).status, "BUSY");
+    assert.match(
+      valueOf(sameConversation).error,
+      /conversation is already running/,
+    );
+
+    writeFileSync(`${gates[1]}.release`, "");
+    const second = valueOf(await pending[1]);
+    assert.equal(second.ok, true);
+    assert.equal(second.conversation_id, id);
+    assert.equal(JSON.parse(second.response).prompt, `wait:${gates[1]}`);
+    const models = await pair.client.callTool({
+      name: "antigravity_models",
+      arguments: {},
+    });
+    assert.equal(models.isError, false);
+    const latest = await pair.client.callTool({
+      name: "antigravity_continue",
+      arguments: { prompt: "ok" },
+    });
+    assert.equal(valueOf(latest).status, "BUSY");
+
+    writeFileSync(`${gates[0]}.release`, "");
+    const first = valueOf(await pending[0]);
+    assert.equal(first.ok, true);
+    assert.notEqual(first.conversation_id, second.conversation_id);
+    assert.equal(JSON.parse(first.response).prompt, `wait:${gates[0]}`);
+    for (const events of progress)
+      assert.ok(
+        events.some(
+          (event) => event.message === "Antigravity is processing the task",
+        ),
+      );
+    const resumed = await pair.client.callTool({
+      name: "antigravity_continue",
+      arguments: { prompt: "ok", conversation_id: id },
+    });
+    assert.equal(valueOf(resumed).ok, true);
+  },
+);
+
+test(
+  "client cancellation stops only the selected agy subprocess",
   { timeout: 8_000 },
   async (t) => {
     const temp = mkdtempSync(path.join(os.tmpdir(), "agy-mcp-cancel-"));
@@ -245,6 +328,11 @@ test(
       rmSync(temp, { recursive: true, force: true });
     });
     const controller = new AbortController();
+    const survivorGate = path.join(temp, "survivor");
+    const survivor = pair.client.callTool({
+      name: "antigravity_run",
+      arguments: { prompt: `wait:${survivorGate}`, timeout_seconds: 10 },
+    });
     const pending = pair.client.callTool(
       {
         name: "antigravity_run",
@@ -252,7 +340,9 @@ test(
       },
       { signal: controller.signal },
     );
-    await waitFor(() => existsSync(pidFile));
+    await waitFor(
+      () => existsSync(pidFile) && existsSync(`${survivorGate}.ready`),
+    );
     const pid = Number(readFileSync(pidFile, "utf8"));
     controller.abort();
     await assert.rejects(pending, /abort|cancel|closed/i);
@@ -269,34 +359,55 @@ test(
       arguments: {},
     });
     assert.equal(models.isError, false);
+    writeFileSync(`${survivorGate}.release`, "");
+    assert.equal(valueOf(await survivor).ok, true);
   },
 );
 
 test(
-  "server stdin EOF shuts down an active subprocess",
+  "server stdin EOF shuts down every active subprocess",
   { timeout: 8_000 },
   async (t) => {
     const temp = mkdtempSync(path.join(os.tmpdir(), "agy-mcp-eof-"));
-    const pidFile = path.join(temp, "pid");
-    const pair = await connected({ TEST_PID_FILE: pidFile });
+    const pair = await connected();
     t.after(async () => {
       await closePair(pair);
       rmSync(temp, { recursive: true, force: true });
     });
-    const pending = pair.client.callTool({
-      name: "antigravity_run",
-      arguments: { prompt: "hang", timeout_seconds: 10 },
-    });
-    await waitFor(() => existsSync(pidFile));
-    const pid = Number(readFileSync(pidFile, "utf8"));
+    const gates = [0, 1, 2].map((i) => path.join(temp, String(i)));
+    const pending = gates.map((gate) =>
+      pair.client.callTool({
+        name: "antigravity_run",
+        arguments: { prompt: `wait:${gate}`, timeout_seconds: 10 },
+      }),
+    );
+    await waitFor(() => gates.every((gate) => existsSync(`${gate}.ready`)));
+    const pids = gates.map((gate) =>
+      Number(readFileSync(`${gate}.ready`, "utf8")),
+    );
     const child = pair.transport._process;
     assert.ok(child, "stdio transport child process is unavailable");
     const childExit = new Promise((resolve) =>
       child.once("exit", (code, signal) => resolve({ code, signal })),
     );
-    const pendingFailure = assert.rejects(pending, /closed|abort|cancel/i);
     child.stdin.end();
-    await pendingFailure;
+    const outcomes = await Promise.all(
+      pending.map(async (call) => {
+        try {
+          return { result: await call };
+        } catch (error) {
+          return { error };
+        }
+      }),
+    );
+    for (const outcome of outcomes) {
+      if (outcome.error) {
+        assert.match(String(outcome.error), /closed|abort|cancel/i);
+      } else {
+        assert.equal(outcome.result.isError, true);
+        assert.equal(valueOf(outcome.result).status, "CANCELED");
+      }
+    }
     const exit = await childExit;
     assert.equal(exit.code, 0);
     assert.equal(
@@ -304,13 +415,17 @@ test(
       null,
       `server process was terminated by ${exit.signal ?? "unknown signal"}`,
     );
-    await waitFor(() => {
-      try {
-        process.kill(pid, 0);
-        return false;
-      } catch (error) {
-        return error?.code === "ESRCH";
-      }
-    }, 4_000);
+    await waitFor(
+      () =>
+        pids.every((pid) => {
+          try {
+            process.kill(pid, 0);
+            return false;
+          } catch (error) {
+            return error?.code === "ESRCH";
+          }
+        }),
+      4_000,
+    );
   },
 );

@@ -1,0 +1,54 @@
+{
+  "name": "agy-mcp",
+  "version": "0.1.0",
+  "description": "A local MCP bridge for delegating tasks to Google Antigravity CLI",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kaikei-e/agy-mcp.git"
+  },
+  "homepage": "https://github.com/Kaikei-e/agy-mcp#readme",
+  "bugs": "https://github.com/Kaikei-e/agy-mcp/issues",
+  "keywords": [
+    "mcp",
+    "antigravity",
+    "agy",
+    "claude-code"
+  ],
+  "packageManager": "pnpm@10.18.1",
+  "type": "module",
+  "bin": {
+    "agy-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "README.ja.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "check": "tsc --noEmit",
+    "test": "pnpm build && node --test test/*.test.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepack": "pnpm build",
+    "doctor": "pnpm build && node dist/index.js --doctor",
+    "probe": "pnpm build && node scripts/probe.mjs"
+  },
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/node": "^22.0.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.5.0"
+  }
+}

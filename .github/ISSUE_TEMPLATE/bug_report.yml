@@ -1,0 +1,27 @@
+name: Bug report
+description: Report a reproducible problem with agy-mcp.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, private prompts, or workspace contents. For security reports, ask the maintainer for a private channel without disclosing details publicly.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include the expected behavior and minimal reproduction steps.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: agy-mcp version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Node.js version, pnpm version, agy version, and MCP client. Remove sensitive paths and values.
+    validations:
+      required: true

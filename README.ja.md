@@ -73,7 +73,7 @@ pnpm run probe
 
 ## MCP クライアントへ接続する
 
-ビルド後、クライアントがコンパイル済みエントリーポイントを起動するよう設定します。[examples/claude-code.mcp.json](examples/claude-code.mcp.json) をコピーし、すべての絶対パスを自分の環境のパスに置き換えてください。
+ビルド後、クライアントがコンパイル済みエントリーポイントを起動するよう設定します。以下にクライアントごとの設定例を示します。絶対パスはすべて自分の環境のパスに置き換えてください。
 
 Claude Code のプロジェクト `.mcp.json` は次のように書けます。
 
@@ -93,7 +93,43 @@ Claude Code のプロジェクト `.mcp.json` は次のように書けます。
 }
 ```
 
+Codex CLI または Codex IDE では、同じ stdio サーバーを `~/.codex/config.toml`、または信頼済みプロジェクト内の `.codex/config.toml` に追加します。Codex CLI と IDE はこの設定を共有します。利用できる設定は [Codex の MCP 設定ドキュメント](https://developers.openai.com/codex/mcp/) も参照してください。[examples/codex.config.toml](examples/codex.config.toml) をコピーし、プレースホルダーをすべて絶対パスに置き換えて、既存ファイルへ必要なテーブルをマージしてください。既存の `mcp_servers.antigravity` がある場合は重複テーブルを追加せず、その項目を編集します。他の設定を上書きしないでください。
+
+```toml
+[mcp_servers.antigravity]
+command = "/absolute/path/to/node"
+args = ["/absolute/path/to/agy-mcp/dist/index.js"]
+startup_timeout_sec = 20
+tool_timeout_sec = 3660
+
+[mcp_servers.antigravity.env]
+AGY_MCP_DEFAULT_WORKSPACE = "/absolute/path/to/workspace"
+AGY_MCP_ALLOWED_ROOT = "/absolute/path/to"
+AGY_MCP_MAX_CONCURRENT = "4"
+# Codex の PATH に `agy` がない場合に設定します。
+AGY_MCP_BIN = "/absolute/path/to/agy"
+```
+
+Codex が Node.js を含む PATH を引き継ぐ場合は `command = "node"` も使えます。GUI や IDE から起動する場合は、`command -v node` で確認した Node.js の絶対パスを指定すると安定します。`agy` がその PATH にない場合は `command -v agy` で確認した絶対パスを `AGY_MCP_BIN` に指定してください。通常の PATH で `agy` が見つかる場合はこの項目を削除できます。Codex の既定値はツール 60 秒、起動 10 秒です。このサーバーのリクエスト既定値は 300 秒、最大値は 3600 秒です。`tool_timeout_sec = 3660` は最大値に 60 秒の余裕を加えた値で、`startup_timeout_sec = 20` は起動待ち時間に余裕を持たせます。
+
+先に TOML を編集せず、`codex mcp add` で stdio コマンドを登録することもできます。
+
+```bash
+codex mcp add antigravity \
+  --env "AGY_MCP_DEFAULT_WORKSPACE=/absolute/path/to/workspace" \
+  --env "AGY_MCP_ALLOWED_ROOT=/absolute/path/to" \
+  --env "AGY_MCP_MAX_CONCURRENT=4" \
+  --env "AGY_MCP_BIN=/absolute/path/to/agy" \
+  -- "/absolute/path/to/node" "/absolute/path/to/agy-mcp/dist/index.js"
+codex mcp list
+codex mcp get antigravity
+```
+
+`add` コマンドでは `startup_timeout_sec` と `tool_timeout_sec` は設定されません。実行後に、他の設定を残したまま、上記のタイムアウト設定を生成されたサーバー項目へ追加してください。MCP 設定を変更した後は Codex CLI または IDE のセッションを再起動します。プロジェクト側の設定は、信頼済みプロジェクトでのみ読み込まれます。
+
 サーバーの stdout は MCP 通信専用です。標準出力に診断ログを書くラッパーを挟まないでください。MCP クライアントのタイムアウトはツールの `timeout_seconds` より少し長く設定します。進捗通知やハートビートは状態を示しますが、クライアント側のタイムアウトを必ず延長するものではありません。
+
+Codex がサーバーを起動できない場合は、Node.js の絶対パスと `AGY_MCP_BIN` を確認してください。IDE プロセスではシェルの起動ファイルが読み込まれないことがあります。呼び出しがタイムアウトする場合は、リクエストの `timeout_seconds`（10〜3600）と `tool_timeout_sec` の両方を確認し、設定変更後に Codex を再起動します。
 
 ## 安全性とワークスペース境界
 

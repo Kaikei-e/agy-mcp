@@ -1,0 +1,17 @@
+# Merge this example into ~/.codex/config.toml, or into .codex/config.toml
+# in a trusted project. Replace every placeholder with an absolute path.
+# Preserve existing settings and edit an existing table with this name rather
+# than defining [mcp_servers.antigravity] twice.
+
+[mcp_servers.antigravity]
+command = "/absolute/path/to/node"
+args = ["/absolute/path/to/agy-mcp/dist/index.js"]
+startup_timeout_sec = 20
+tool_timeout_sec = 3660
+
+[mcp_servers.antigravity.env]
+AGY_MCP_DEFAULT_WORKSPACE = "/absolute/path/to/workspace"
+AGY_MCP_ALLOWED_ROOT = "/absolute/path/to"
+AGY_MCP_MAX_CONCURRENT = "4"
+# Remove this entry when `agy` is available in Codex's PATH.
+AGY_MCP_BIN = "/absolute/path/to/agy"

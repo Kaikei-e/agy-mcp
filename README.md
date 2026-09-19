@@ -73,7 +73,7 @@ The probe invokes `run` and then `continue` on the returned conversation. It can
 
 ## Connect an MCP client
 
-Build the server, then configure the client to launch the compiled entry point. Copy [examples/claude-code.mcp.json](examples/claude-code.mcp.json), replace every absolute path with your own, and add it to the client configuration appropriate for your installation.
+Build the server, then configure the client to launch the compiled entry point. The examples below show the client-specific configuration; replace every absolute path with your own.
 
 For Claude Code, a project `.mcp.json` entry can look like this:
 
@@ -93,7 +93,43 @@ For Claude Code, a project `.mcp.json` entry can look like this:
 }
 ```
 
+For Codex CLI or the Codex IDE, add an equivalent stdio server to `~/.codex/config.toml`, or to `.codex/config.toml` in a trusted project. Codex CLI and the IDE share this configuration; see the [Codex MCP configuration documentation](https://developers.openai.com/codex/mcp/) for the supported settings. Copy [examples/codex.config.toml](examples/codex.config.toml), replace every placeholder with an absolute path, and merge the relevant tables into the existing file. Edit an existing `mcp_servers.antigravity` entry instead of adding a duplicate table, and do not overwrite other settings.
+
+```toml
+[mcp_servers.antigravity]
+command = "/absolute/path/to/node"
+args = ["/absolute/path/to/agy-mcp/dist/index.js"]
+startup_timeout_sec = 20
+tool_timeout_sec = 3660
+
+[mcp_servers.antigravity.env]
+AGY_MCP_DEFAULT_WORKSPACE = "/absolute/path/to/workspace"
+AGY_MCP_ALLOWED_ROOT = "/absolute/path/to"
+AGY_MCP_MAX_CONCURRENT = "4"
+# Set this when `agy` is not available in Codex's PATH.
+AGY_MCP_BIN = "/absolute/path/to/agy"
+```
+
+`command = "node"` also works when Codex inherits a PATH containing Node. An absolute Node path is more reliable for GUI or IDE launches; find it with `command -v node`. Set `AGY_MCP_BIN` to an absolute executable path when `agy` is not on that PATH (`command -v agy`). Remove that entry when the `agy` command is available normally. Codex defaults to a 60-second tool timeout and a 10-second startup timeout. This server defaults each request to 300 seconds and accepts up to 3600; `tool_timeout_sec = 3660` leaves a 60-second client margin above the maximum, while `startup_timeout_sec = 20` allows more startup time.
+
+Instead of editing TOML first, `codex mcp add` can register the stdio command:
+
+```bash
+codex mcp add antigravity \
+  --env "AGY_MCP_DEFAULT_WORKSPACE=/absolute/path/to/workspace" \
+  --env "AGY_MCP_ALLOWED_ROOT=/absolute/path/to" \
+  --env "AGY_MCP_MAX_CONCURRENT=4" \
+  --env "AGY_MCP_BIN=/absolute/path/to/agy" \
+  -- "/absolute/path/to/node" "/absolute/path/to/agy-mcp/dist/index.js"
+codex mcp list
+codex mcp get antigravity
+```
+
+The `add` command does not set `startup_timeout_sec` or `tool_timeout_sec`. After using it, add those timeout settings to the generated server entry, preserving any other configuration. Restart the Codex CLI or IDE session after changing MCP configuration. The project-level file is loaded only for a trusted project.
+
 The server communicates over standard input and output. Do not wrap it in a command that writes diagnostic text to stdout. Configure the MCP client's own timeout slightly longer than the tool's `timeout_seconds`; progress notifications and heartbeats are useful status signals, but they do not guarantee that a client resets its timeout.
+
+If Codex reports that it cannot start the server, check the absolute Node path and `AGY_MCP_BIN`; shell startup files are not always loaded by IDE processes. If a call times out, check both the request's `timeout_seconds` (10–3600) and `tool_timeout_sec`, then restart Codex after editing the config.
 
 ## Safety and workspace boundaries
 
